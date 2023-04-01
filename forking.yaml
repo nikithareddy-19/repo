@@ -1,0 +1,133 @@
+# This YAML script forks multiple repo branches into a single branch using the Azure DevOps REST API.
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- script: |
+    # Set variables
+    org="<organization>"
+    project="<project>"
+    token="<personal-access-token>"
+    source_branch="main"
+    target_branch="release"
+    repo_names="repo1,repo2,repo3"
+
+    # Loop through repos and create fork
+    for repo_name in $(echo $repo_names | tr "," "\n")
+    do
+        repo_id=$(curl -s -H "Authorization: Bearer $token" "https://dev.azure.com/$org/$project/_apis/git/repositories?api-version=6.1-preview.1" | jq -r ".value[] | select(.name == \"$repo_name\") | .id")
+        parent_repo_id=$(curl -s -H "Authorization: Bearer $token" "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo_id/parentRepository?api-version=6.1-preview.1" | jq -r ".id")
+        new_fork_name="${repo_name}_${target_branch}"
+        curl -s -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"name\": \"$new_fork_name\", \"parentRepository\": {\"id\": \"$parent_repo_id\"}}" -X POST "https://dev.azure.com/$org/$project/_apis/git/repositories?api-version=6.1-preview.1"
+    done
+
+    # Loop through forks and create branch
+    for repo_name in $(echo $repo_names | tr "," "\n")
+    do
+        fork_name="${repo_name}_${target_branch}"
+        fork_id=$(curl -s -H "Authorization: Bearer $token" "https://dev.azure.com/$org/$project/_apis/git/repositories?api-version=6.1-preview.1" | jq -r ".value[] | select(.name == \"$fork_name\") | .id")
+        source_ref="refs/heads/$source_branch"
+        target_ref="refs/heads/$target_branch"
+        curl -s -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"name\": \"$target_branch\", \"oldObjectId\": \"$(curl -s -H \"Authorization: Bearer $token\" \"https://dev.azure.com/$org/$project/_apis/git/repositories/$fork_id/refs?api-version=6.1-preview.1\" | jq -r \".value[] | select(.name == \\\"$source_branch\\\") | .objectId\")\"}" -X POST "https://dev.azure.com/$org/$project/_apis/git/repositories/$fork_id/refs?api-version=6.1-preview.1"
+    done
+    # Loop through repos and create pull request
+    for repo in repo1 repo2 repo3
+    do
+        repo_id=$(curl -s -H "Authorization: Bearer $token" "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo?api-version=6.1-preview.1" | jq -r ".id")
+        source_ref="refs/heads/feature-branch"
+        target_ref="refs/heads/$release_branch"
+        title="Merge feature-branch into $release_branch"
+        description="This is a pull request to merge feature-branch into $release_branch"
+        curl -s -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"sourceRefName\": \"$source_ref\", \"targetRefName\": \"$target_ref\", \"title\": \"$title\", \"description\": \"$description\"}" -X POST "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo_id/pullrequests?api-version=6.1"
+    done
+
+    # Loop through repos and complete pull request
+    for repo in repo1 repo2 repo3
+    do
+        pr_id=$(curl -s -H "Authorization: Bearer $token" "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo/pullrequests?api-version=6.1" | jq -r '.value[0].pullRequestId')
+        curl -s -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"status\": \"completed\", \"completionOptions\": {\"deleteSourceBranch\": true}, \"lastMergeSourceCommit\": \"$(curl -s -H \"Authorization: Bearer $token\" \"https://dev.azure.com/$org/$project/_apis/git/repositories/$repo/pullrequests/$pr_id/commits?api-version=6.1-preview.1\" | jq -r '.value[0].commitId')\"}" -X PATCH "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo_id/pullrequests/$pr_id?api-version=6.1"
+    done
+### To Create PR Automatically
+# trigger:
+# - main
+
+# pool:
+#   vmImage: 'ubuntu-latest'
+
+# steps:
+# - script: |
+#     az repos pr create --repository https://dev.azure.com/organization/project/_git/repo --source-branch feature-branch --target-branch main --title "My Pull Request" --description "This is my pull request"
+#   displayName: 'Create Pull Request'
+
+##ABOUT THE VARIABLES
+# org: The name of the Azure DevOps organization that contains the repositories you want to fork.
+# project: The name of the Azure DevOps project that contains the repositories you want to fork.
+# token: A personal access token (PAT) that has the necessary permissions to create branches and pull requests in the repositories. You can create a PAT in Azure DevOps by going to User Settings > Personal access tokens.
+# source_branch: The name of the branch that you want to fork from. In this case, it's set to main.
+# release_branch: The name of the new branch that you want to create and merge the other branches into. In this case, it's set to release.
+# repo1, repo2, repo3: The names of the repositories that you want to fork.
+
+##CREATING THE VARIABLE GROUPS FOR SENSITIVE INFO
+
+# In Azure DevOps, go to your project and click on the "Pipelines" menu on the left-hand side.
+# Click on "Library" and then click "New variable group".
+# Give your variable group a name, such as "Release Variables", and add the variables you want to set securely. In this case, you would add the token variable.
+# Set the scope of the variable group to control who has access to the variables. You can choose to make it available to the entire organization, a specific project, or a specific pipeline.
+# Save the variable group.
+# In your YAML file, replace the hard-coded values of the variables with references to the variable group. For example, replace token: <personal-access-token> with token: $(ReleaseVariables.token).
+# Save and commit your YAML file.
+
+##CREATING PAT TOKEN FOR FORKING A REPO USING REST API
+
+# Sign in to Azure DevOps and go to your user settings by clicking on your profile picture in the top-right corner and selecting "Security".
+# Click on "Personal access tokens" in the left-hand menu.
+# Click "New Token" to create a new PAT.
+# Give your token a name and set the expiration date. Note that the expiration date cannot be longer than one year from the current date.
+# Under "Scopes", select the following options to grant the necessary permissions:
+# Code: Read & write
+# Code: Manage repositories
+# Code: Create branch
+# Code: Create pull request
+# Click "Create" to create the PAT.
+# Copy the PAT value that is displayed. This value will only be shown once, so make sure to copy it to a secure location.
+# You can then use this PAT value as the value of the token variable in your YAML file to authenticate with Azure DevOps when creating branches and pull requests.
+
+##Another example to Fork repos 
+
+# trigger:
+# - main
+
+# pool:
+#   vmImage: 'ubuntu-latest'
+
+# steps:
+# - script: |
+#     # Set variables
+#     org="<organization>"
+#     project="<project>"
+#     token="<personal-access-token>"
+#     source_branch="main"
+#     target_branch="release"
+#     repos="repo1 repo2 repo3"
+
+#     # Loop through repos and create branch
+#     for repo in $repos
+#     do
+#         repo_id=$(curl -s -H "Authorization: Bearer $token" "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo?api-version=6.1-preview.1" | jq -r ".id")
+#         curl -s -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"name\": \"$target_branch\", \"oldObjectId\": \"$source_branch\"}" -X POST "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo_id/refs?api-version=6.1-preview.1"
+#     done
+
+#     # Loop through repos and create pull request
+#     for repo in $repos
+#     do
+#         repo_id=$(curl -s -H "Authorization: Bearer $token" "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo?api-version=6.1-preview.1" | jq -r ".id")
+#         source_ref="refs/heads/$source_branch"
+#         target_ref="refs/heads/$target_branch"
+#         title="Merge $source_branch into $target_branch"
+#         description="This is a pull request to merge $source_branch into $target_branch"
+#         curl -s -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "{\"sourceRefName\": \"$source_ref\", \"targetRefName\": \"$target_ref\", \"title\": \"$title\", \"description\": \"$description\"}" -X POST "https://dev.azure.com/$org/$project/_apis/git/repositories/$repo_id/pullrequests?api-version=6.1"
+#     done
